@@ -1,0 +1,437 @@
+---
+output:
+  html_document: default
+  '': default
+  fig_caption: yes
+  number_sections: yes
+  toc: yes
+  toc_depth: 3
+  highlight: tango
+  linkcolor: red
+header-includes:
+- \usepackage[french]{babel}
+- \usepackage{float}
+- \usepackage{booktabs}
+---
+\newpage
+\tableofcontents
+\listoffigures
+\listoftables
+\newpage
+
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.align = 'center',fig.pos = 'H')
+#position par défaut des figures dans le pdf : centrées et à l'endroit où on les construit
+library(FactoMineR) # Pour faire l'ACP
+library(leaps) # Selection des variables
+library(tidyverse) # Pour la gestion des données
+library(magrittr) # pour utiliser l'opérateur pipe %>%
+library(gridExtra) # pour partager la fenêtre graphique avec ggplot2
+library(GGally) # Pour utiliser la fonction ggpairs
+library(corrplot) # Pour utiliser la fonction corrplot.mixed
+library(magrittr) #pour utiliser l'opérateur pipe %>%
+library(factoextra) # Pour la fonction "fviz_pca_var/fviz_pca_ind" en ACP pour de beaux graphiques
+library(kableExtra) #pour améliorer les tableaux
+# options(knitr.table.format = "latex")
+```
+
+```{r nettoyage, include=FALSE}
+rm(list=ls()) # nettoye l'environement de travail
+```
+
+# Chargement des données 
+
+```{r chargement, include=TRUE}
+basket.data<-read.table("NBAdata.txt",row.names="Players",header=T,sep=",") #lecture du fichier .txt avec R de base
+basket.data = subset(basket.data, select = colnames(basket.data)[1:16])
+basket.data2<-as_tibble(basket.data) # transformation du dataframe en tibble
+ind_qual<-6:7 # Indice des variables qualitatives dans le dataset
+ind_quant<-setdiff(1:16,c(1, 5 ,ind_qual)) # Indice des variables quantitatives dans le dataset
+C<-colnames(basket.data2) # Noms des prédicteurs
+var_qual<-C[ind_qual] # Extraction des prédicteurs qualitatifs
+var_quant<-C[ind_quant] # Extraction des prédicteurs quantitatifs
+taille = dim(basket.data2) 
+```
+# PREMIERE PARTIE : Analyse en Composante Principale
+
+## Présentation de l'étude et description des données
+
+Le jeu de données NBA a été créé à partir des statistiques disponibles sur le site de la NBA. Les données étudiées ici s’appuient sur les résultats de quatre équipes lors de la saison régulière 2012-2013. Pour chacun des 68 joueurs, un ensemble d'informations à été collecté tels que : la taille, le poids, l'age, l'équipe, le salaire, ainsi que certaines informations relatives aux performances des joueurs durant la dite saison comme,  le nombre moyen de pagnés à 2 points et à 3 points réussis en un match, le nombre moyen de lancers francs tentés et réussis un macth, etc. Le résumé descriptif détaillé des données de l'étude se trouve en anexe.
+
+Le jeu de données contient ```r taille[1]``` lignes, sur lesquelles on'a mesuré ```r taille[2]``` variables. Chaque ligne (l'unité statistique) represente un joueur.
+
+## Objectif de l'étude
+
+Le but du l'étude est d’expliquer ou de caracteriser les joueurs par rapport aux variables. Plus précisément, il s'agira pour nous de reponde aux questions suivantes :  
+
++ Déterminer quelles variables semblent fortement liées au Salaire.
++ Identifier les joueurs atypiques c'est à dire des jouers qui présentent de tres bonne ou tres mauvaises performances par rapport aux joueurs moyens.
++ Caracteriser ces groupes de joueurs qui se démarque des autres, par les variables de l'étude.
+
+## Analyse multivariées
+
+Avant de ce lancer dans l'analyse en composante principale, nous nous proposons de réaliser une brève analyse bivariée sur un sous en ensemble de données choisi arbitrairement pour aprehender les données.
+
+### Matrices des nuages de points
+
+```{r fig.cap="Matrice des nuages de points",fig.height=4,fig.width=9, echo=TRUE, warning=FALSE, cache=TRUE}
+ggpairs(basket.data2, columns=c("Salary",var_quant[6:12]))%>%print(progress=F)
+```
+Comme on peut l'observer sur le diagramme ci-dessus, Pour ces 8 variables,
+
+- la corrélation du Salaire avec les 7 autres variables est positive et semble être vraiment différente de 0, mais il n’existe pas de seuil (même théorique) indiquant à quel point la corrélation est proche de 1.
+
+- plusieurs variables semblent correlées avec d'autres variables : donc faire une ACP peut s'averer intérréssante, car elle nous permettra de resumer ces informations.
+
+**Remarque :** sur la diagonale de ce diagramme, sont representés les densités des données, estimées par la methode du noyaux.
+
+### Boxplot
+
+```{r boxplot,fig.cap="Boxplot",fig.height=4,fig.width=9, echo=TRUE, warning=FALSE}
+box.plot1<-ggplot(data=basket.data2, aes(x =Team, y=Salary)) +stat_boxplot(geom ="errorbar") + geom_boxplot(fill="pink") + ylab(" Annual Salary") + xlab("Resumé par équipe")+ theme(axis.text.x = element_text(angle = 90, hjust = 1)) + theme(axis.text.x = element_blank(), axis.ticks = element_blank()) + coord_flip()
+box.plot2<-ggplot(data=basket.data2, aes(x =Position, y=Salary)) +stat_boxplot(geom ="errorbar") + geom_boxplot(fill="pink") + ylab("Annual Salary") + xlab("Resumé par position")
+grid.arrange(box.plot1, box.plot2, nrow =1,  ncol=2)
+```
+* D'apres le premier diagramme, le salaire moyen par équipe est sensiblement le meme (environs 4461700 Dollars par an). En outre, on observe certains salaires extremes pour toutes les equipes, avec cependant une grande dispersion pour les Spurs et Thunder.
+
+* Concernant le deuxieme diagramme, on observe une forte dispersion des salaires pour les joueurs évoluant au poste de *Center*. Ceux évoluant aux postes de *Forward* et *Guard* ont des salaires assez proche, avec pour certains des salaires tres élévés (extremes).
+
+## Analyse en Composante Principale (ACP)
+
+### Préparation des données pour l'ACP
+
+* Dispersion des variables
+
+```{r summaryvar,echo=TRUE}
+Tab.Latex = round(basket.data2%>%summarise_at(c(var_quant[1:5],var_quant[8:9]), sd, na.rm=T), 2)
+knitr::kable(Tab.Latex, align='c',caption="Dispersion des variables quantitatives",booktabs=T)%>%
+kable_styling(latex_options = c("HOLD_position"), font_size = 15)
+```
+Le tableau ci-dessus, contient les écarts-types de quelques variables quantitatives choisie arbitrairement. On observe sur ce tableau que les écarts types vont de l’ordre de $\ 10^{-2}$ à plus de $\ 10^{6}$, donc les échelles de mesure sont très différentes d’une variable à l’autre. On fera donc une ACP normée dans la suite pour donner le même poids à toutes les variables indépendamment de leur dispersion.
+
+### ACP normée des données
+
+Ici, nous choisissons de déclarer le salaire comme quantitative supplémentaire (i.e. non utilisée pour construire les composantes principales), car nous souhaitons expliquer le salaire en fonction des autres variables. Nous déclarerons également les deux variables qualitatives de notre jeux de données (Team et Position) comme variables qualitatives suplémentaires.
+
+### Apercu des variables : Cercle de correlation des variables
+
+```{r acp, include=FALSE}
+res.pca = PCA(basket.data, scale.unit = TRUE,  quali.sup = c(1, 5, 6), quanti.sup = c(4), graph = F)
+```
+
+```{r cercle.Corr1, fig.cap="Graphe des cercles de correlation des varaibles", fig.height=4, fig.width=8,echo=TRUE}
+fviz_pca_var(res.pca, col.var ="cos2", repel = TRUE, labelsize=3) + scale_color_gradient2(low="white", mid="blue",high="red", midpoint=0.5, space = "Lab") + labs(title ="Plan factoriel 1-2") + theme_minimal()
+```
+On observe sur ce diagramme que :
+
+- le nombre de minutes jouées (*Minute*), le salaire (*Salary*), le nombre de panier à 2 points tentés (*Fields goal attempted*), le nombre de paniers à 2 points réussis (*Fields goals made*)
+le nombre de lancers francs tentés (*Free throws attempted*) et enfin le nombre de lancers francs réussis (*Free throws made*) sont très corellés positivement à la premiere composante principale.
+
+- le poids des joueurs (*Weight*) semble corelé positivement à la deuxieme composante principale.
+
+*Remarque :* la légende du cercle de corelation, nous indique les variables bien representés : c'est à dire les variables qui ont une qualité de representation élevé. En d'autre mot des variable dont le $cos^{2}\theta$ est grand et proche de 1.
+
+### Graphe des individus
+
+```{r PlanFacto12,fig.cap="Nuage des individus sur l'axe 1-2", fig.height=4, fig.width=8, echo=TRUE}
+fviz_pca_ind(res.pca, col.ind="cos2", labelsize = 3, pointsize = 1) + scale_color_gradient2(low="white", mid="blue",high="red", midpoint=0.5, space = "Lab") + labs(title ="Plan factoriel 1-2")
+```
+- le premier plan factoriel résume à lui seul pres de 66% de l'ensemble des informations contenues dans les données. les individus representés en couleur rouge sur ce diagramme sont des indivdus qui sont bien représenté et à l'oposer, les individus de couleurs bleue transparents sont mal représentés. 
+
+- On peut egalement constater que certains joueurs bien representés sur l'axe factoriel 1, à l'exemple de *Carmelo Anthony*, *Kevin Durant* ou encore le tres celebre joueurs *Lebron James*, prennent des valeurs relativement tres éloigné du centre : ce qui laisse penser que ces jouers sont atypiques. Pour voir plus clair, nous decidons d'etudier par la suite la distance des joueurs au centre du nuage.
+
+### Etude des distances au centre du nuage
+
+```{r boxplot_dist,fig.cap="Résumé des distances au centre du nuage",fig.height=2,fig.width=6, echo=TRUE, warning=FALSE}
+d = as.data.frame(res.pca$ind$dist)
+colnames(d) = c("distance")
+box.plt<-ggplot(data=d, aes(y=distance)) +stat_boxplot(geom ="errorbar") + geom_boxplot(fill="pink", outlier.colour="red", outlier.size=4) + ylab("distance au centre du nuage") + coord_flip()
+box.plt
+```
+Au vu du diagramme ci dessus, cinq jouers de la NBA prennent des valeurs atypiques sur l'axe factoriel 1 (point en rouge sur la gauche du boxplot). Ces joueurs atypiques son representés dans le tableau ci-dessous.
+
+
+```{r tab_dist,fig.cap="Résumé des distances au centre du nuage",fig.height=3,fig.width=6, echo=TRUE, warning=FALSE}
+ind.dist.sort<-sort(res.pca$ind$dist,decreasing=T) #rearrangement decroissant des distances
+atypique = as.data.frame(ind.dist.sort[1:5]) #les 5 individus les plus éloignés du centre
+colnames(atypique) = c("distance")
+knitr::kable(atypique, align='c',caption="Les 5 joueurs les plus élignés du centre sur l'axe 1",booktabs=T)%>% 
+kable_styling(latex_options = c("HOLD_position", "striped"), font_size = 15)
+```
+* Caraterisation des joueurs atypiques :
+
+L'analyse du cercle de corrélation vu précedement, nous a permis d'observer que certaines variables (voir section précédente) étaient tres correlées positivement à l'axe factoriel 1 : celà signifie que les individus (en l'occurrence les points atypiques) qui prennent des  tres grandes valeurs sur cet axe sont des joueurs qui ont les plus grand salaires, ont beaucoups plus de minutes de jeux et donc le nombre de parniers à 2 points réussis et le nombre de lancers francs réussis en moyenne en un match sont trés grands.
+
+## Conclusion
+
+Arrivé au terme de notre étude sur l’Analyse en Composante Principale sur les données NBA, nous pouvons conclure que :
+
++ le salaires des joueurs (*Salary*) de la NBA sont tres fortement associés lineairement au nombre moyen de paniers à 2 points réussis en un match (*Fields goals made*), au nombre moyen de lancers francs réussis en un match (*Free throws made*) et enfin au nombre moyen de lancers francs tentés en un match (*Free throws attempted*).
+
++ les joueurs atypiques, c'est-à-dire les joueurs NBA ayant des performances sportives impréssionnantes sont : *Kevin Durant, Carmelo Anthony, LeBron James, Russell Westbrook et enfin Solomon Jones*
+
++ ces joueurs atypiques sont caractérisés par un tres grand salaire, par un temps de jeux plus important, par un nombre moyen de parniers à 2 points réussis en  un match tres grands, ainsi que le nombre moyen de lancers francs réussis en un match.
+
+# DEUXIEME PARTIE : Modele de regression linéaire mutiple
+
+**Remarque :** Dans cette deuxieme partie, nous utiliserons un jeu de données different de celui utilisé pour l'ACP pour illustrer les méthodes statistiques de régressions lineaires et d'analyse de la variance vue en cours.
+
+```{r nettoyage1, include=FALSE}
+rm(list=ls()) # nettoye l'environement de travail
+```
+
+```{r echo=FALSE, include= TRUE}
+ozone <- read.csv("~/Projet_ADD/ozone.txt", sep="")
+ozone_var_quant = subset.data.frame(ozone, select = -c(vent, pluie))
+ozone_var_qual = subset.data.frame(ozone, select = c(maxO3, vent, pluie))
+attach(ozone)
+tab=dim(ozone)
+```
+## Presentation de l'étude et des données
+
+L'étude qui suit, s'appui sur une enquête qui a été menée à Rennes pendant l'été 2001 sur l'impact de l'ozone sur la santé. En effet plusieurs facteurs suceptible d'impacter la teneur d'ozone dans l'air ont été mésurés. Les données recensées contienent ```r tab[1]``` lignes et ```r tab[2]``` variables explicatives, dont 11 variables quantitatives et 2 variables qualitatives décrites comme suit : 
+
+- La variable cible ou à expliquer **maxO3**
+- Les variables de température **T9**, **T12**, **T15** (les suffixes 9, 12 et 15 désignant respectivement des mesures prises à 9h, 12h et 15h, pour toutes les variables) ;
+- Les variables de nébulosité **Ne9**, **Ne12**, **Ne15** ;
+- Les variables de vent **Vx9**, **Vx12**, **Vx15** ;
+- La mesure du maximum de la concentration en ozone de la veille **maxO3v**.
+
+## objetifs de l'étude et approche de travail
+
+L'objectif de l'etude est d'expliquer la pollution d'ozone **maxO3** (concentration en ${\mu}g/m^{3}$) en fonction des variables explicatives du jeux de données. Pour ce faire, nous nous proposons d'éffectuer une régression lineaire multiple : 
+
+Les variables pluie et vent étant qualitatives, elles sont supprimées du data.frame (même s’il serait possible de les utiliser dans un modèle plus général). Dans un souci de clarté, nous étudirons plus en détails ces deux variables qualitatives séparement au travers d'une analyse de la variance pour mesurer l'éffet de ces facteurs sur la concentration d'ozone.
+
+Le modele ainsi consideré, est définit comme suit :
+$$maxO3={\beta_0}+{\beta_1}T9+{\beta_2}T12+{\beta_3}T15+{\beta_4}Ne9+{\beta_5}Ne12+{\beta_6}Ne15+{\beta_7}Vx9+{\beta_8}Vx12+{\beta_9}Vx15++{\beta_{10}}maxOv+{\epsilon}$$
+Avec:
+
+- ${\beta_i}$ : les coefficients du modele avec i = 1,...,10
+
+- ${\epsilon}$ : les résidus du modele
+
+## Analyse des données
+
+### Inspection graphique
+
+Avant d'ajuster le modèle à nos données, representons le diagramme de dispersion de quelques paires de variable choisies arbitrairement.
+
+```{r pairs,fig.cap="Diagramme de dispersion de quelques paires de variables",fig.height=4,fig.width=9, echo=TRUE, warning=FALSE, cache=TRUE}
+pairs(ozone_var_quant[1:6]) 
+```
+On obserse sur ce graphique que les variables températures et nébulosités semblent liées à la variable cible *maxO3*. On observe également que le groupe des variables températures (resp Nébulosités) sont correlées entre elles, ce qui veut dire que ces variables d'un meme groupe apportent la meme information. 
+
+Comme nous le verrons par la suite dans *l'ajustement du modele*, cela pose au moins 3 problemes majeurs à savoir :
+
+- la pertubations de la qualité des estimateurs (variances tres grande)
+- les coefficients deviennent non significatif
+- valeurs des coefficients contradictoires (signes opposés)
+
+### Ajustement du modele sur les données
+
+```{r  warning=FALSE, fig.cap="Parametres estimés du modelle", echo=TRUE}
+ml = lm(maxO3~., data=ozone_var_quant)
+somaire = summary(ml)
+knitr::kable(as.data.frame(somaire$coefficients), align='c',caption="Coefficients",booktabs=T)%>% 
+kable_styling(latex_options = c("stripped","HOLD_position"), font_size = 15) %>% row_spec(c(5,11), bold = T, color = "white", background = "red")
+```
+Au vu de la statistique de Fisher global $(p-value = 2.2e^{-16})$, nous pouvons conclure qu'au moins une des variables explicatives est liée ou associée à la concentration d'ozone dans l'air. Les test individuels de student nous indiquent que :
+
+- seule deux variables à savoir, les variables *Ne9* et *maxOv* sont lineairement associée à la concentration de l'ozone *maxO3* avec une chacune p-value inferieur à 5% ( $p-value=0.0216$ pour la variable *Ne9* et $p-value = 1.88e^{-7}$ pour la varaible *maxOv*)
+
+- les autres variables ne sont pas significativement associées lineairement à la concentration de l'ozone avec des p-value supérieur à 5% : ce qui s'explique comme nous l'avons rappelé précédement par la redondance de l'information contenue dans les données.
+
+### Selection des variables
+
+ Certaines variables de notre modele apportant la meme information, il s'avere donc logique que dans cette section nous nous intéressions à la selection des variables afin de determiner le meilleur modele (modele parcimonieux).
+ 
+```{r select.var,fig.cap="Recherche exhautive suivant trois critères differents",fig.height=4,fig.width=9, echo=TRUE, warning=FALSE}
+par(mfrow=c(1,3))
+choix = regsubsets(maxO3~., nbest=1, nvmax=10, data=ozone_var_quant, method="exh")
+plot(choix, scale = "adjr2")
+title(main = expression(R[a]^2), line = 1.5, cex.main = 1.7)
+plot(choix, scale = "Cp")
+title(main = expression(""*C[p]*"-Mallows"), line = 1.5, cex.main = 1.7)
+plot(choix, scale = "bic")
+title(main = expression("BIC"), line = 1.5, cex.main = 1.7)
+title('Séléction des variables', outer=TRUE, line = -1.4, cex.main = 1.9)
+```
+Nous avons effectué une *recherche exhaustive* avec trois critères de sélections differents $R^{2}_a$, $C_p$ et $BIC$ : ce qui est pratique et peu couteux en temps de calcul lorsque l'on ne dispose que d'un nombre raisosonnable de variables explicatives, comme c'est le cas pour notre étude (une dizaine de variables environs).
+
+Les trois diagrammes ci dessus, obtenus à partir des trois critères de choix cités plus haut pour la recherche exhaustive suggèrent à l'unanimité le modele optimal définit par :
+
+$$maxO3={\beta_0}+{\beta_1}T12+{\beta_2}Ne9+{\beta_3}Vx9+{\beta_{4}}maxOv+{\epsilon}$$
+Nous rappelons que ce nouveau modele optimal est celui que nous considèrerons dans la suite de notre analyse. Ce modele optimal etait prévisible. En effet, comme nous l'avons rappelé plus haut le groupe des variables temperatures (T9, T12, T15) étaient correlés entre elles. IL en était de meme pour le groupe des variables nébulosités (Ne9, Ne12, Ne15) et les variables de vent (Vx9, Vx12, Vx15) : donc la recherche exhaustives à juste proposé une variable dans chaque groupe auquel s'ajoute la variable maxOv.
+
+### Analyse des résidus
+
+1. Validation des hypotheses du modele optimal
+
+```{r normal,fig.cap="Normalité",fig.height=4,fig.width=8, echo=TRUE, warning=FALSE}
+new.data = subset.data.frame(ozone_var_quant, select = c(maxO3, T12, Ne9, Vx9, maxO3v))
+data.pred <- new.data[sample(1:nrow(new.data), 2,replace=FALSE), ] # selection aleatoire de 2 observations avant la modelisation. servirons pour la prérvision
+a = row.names.data.frame(new.data)
+a = as.integer(a)
+b = row.names.data.frame(data.pred)
+b = as.integer(b)
+index_1 = which(b[1]==a)# recuperation des indexes des 2 obs aleatoires selectionnees
+index_2 = which(b[2]==a)
+new.data = new.data[-c(index_1, index_2), ] # suppression des 2 obs dans les donnees d'apprentissage
+new.ml = lm(maxO3~., data = new.data)
+```
+
+```{r echo=TRUE, fig.cap="Inspection de l'hypothese de normalité et d'homoscédasticité des résidus", fig.height=4,fig.width=9}
+par(mfrow=c(1,3))
+res.stud = rstudent(new.ml)
+qqnorm(res.stud, col ="blue")
+abline(0,1, col="red", lty=2, lwd=2)
+hist(res.stud, breaks = 15, freq = FALSE, xlab = "Residus", main = "Histograme des residus")
+curve(dnorm(x, mean(res.stud), sd(res.stud)), add = TRUE, col="red")
+plot(new.ml, 1)
+```
+- Les deux premiers diagrammes ci dessus (*QQ-plot* et *Histogramme des résidus*) nous informent sur la normalité des résidus. On peut observer que les résidus s'alignent bien sur la bisséctrice, ainsi que la densité qui se supperpose bien sur l'histogramme des residus : donc l'hypothèse de normalité des residus est accepté.
+
+- Le diagramme 3 quant à lui, nous montre que les résidus ont tendance à être répartis de façon homogène tout le long des valeurs prédites ou ajustées par le modèle : et donc l’hypothèse d’hémoscédasticité des résidus est acceptée.
+
+2. Recherche des observations abérrantes et/ou influentes
+
+```{r atypiq, fig.cap="observations atypiques", echo=TRUE,fig.height=4,fig.width=9, warning=FALSE}
+par(mfrow=c(1,2))
+plot(res.stud, col='green',pch=c(3),main='Résidus studentisés')
+abline(h=c(-2,2), col=2, lty=2, lwd=2)
+n = dim(new.data)[1]
+p =  dim(new.data)[2]
+s1 <- qf(0.5,p,n-p)
+s2 <- qf(0.1,p,n-p)
+plot(1:n, cooks.distance(new.ml), main = "Observations influentes", type = "h", xlab='Index',ylab='Distance de Cook', ylim = c(0, 0.9))
+abline(s2,0,lty=3, col="red", lwd=2)
+abline(s1,0,lty=2, col="red", lwd=2)
+```
+- On observe sur le premier diagramme que plus 95% des résidus studientisés  $t_i^*$ se trouvent dans l'intervalle [−2,2] et les autres à proximité de ces limites : donc on peut considerer qu'il n'y a pas d'observations abbérantes.
+
+- Du point de vue de la distance de Cook (diagramme 2), aucune observations ne semble etre considéré comme globalement influente, car toutes les distances sont en dessous du seuil $f_{p,n-p}(0.1)=0.32$ souhaitable et fixé par le statisticien américain  *R. Dennis Cook* en 1977.
+
+## Prévision et Intervalle de confiance pour la prédiction
+
+** Remarque importante :** Avant l'ajustement de notre modele de regression sur les données, nous avons volontairement mis de coté 2 observations choisis de maniere aleatoire : ceci dans le but de prédire quelle serait la pollution d’Ozone obtenu avec notre modèle final.
+
+```{r prevision,fig.cap="Tableau des valeurs prédites avec intervalle de confiance",fig.height=4,fig.width=9, echo=TRUE, warning=FALSE}
+y_pred <- predict(new.ml, newdata = data.pred[, -1], interval = "pred")
+tab = as.data.frame(cbind(data.frame(maxO3 = data.pred$maxO3), y_pred))
+knitr::kable(tab, align='c',caption="Prévision et intervalle de confiance",booktabs=T)%>% 
+kable_styling(latex_options = c("HOLD_position"), font_size = 15)
+```
+D'apres le tableau ci-dessus, on observe que les valeurs prédites (*colonne fit*) sont relativement proches des vraie valeurs observées (*colonne maxO3*).
+
+## Conclusion
+
+Arrivé au terme de cet étude sur l'analyse des données d'*ozone* par la méthode de régréssion lineaire, nous pouvons conclure que :
+
+- la température à 12h (*T12*), la nébulosité à 9h (*Ne9*), le vent à 9h (*Vx9*) et enfin, la concentration maximum de l'ozone de la veille (*maxO3v*), sont linéairement associés à la pollution de l'ozone.
+
+- Le pourcentage d'inertie expliqué par notre modele optimal est d'environs *75%*
+
+# TROISIEME PARTIE : Analyse de la variance (ANOVA)
+
+**Remarque:** Dans cette partie consacrée à l'ANOVA, nous étudierons en détail les deux variables qualitatives *vent* et *pluie* du jeux de donnée **Ozone** étudié précedemment dans la deuxiemme partie.
+
+## Objectifs de l'étude
+
+* Evaluer l'impact des facteurs *vent* et *pluie* sur la pollution de l'air *maxO3*
+
+* Determiner les nieveaux de facteurs qui ont un effet sur la pollution de l'air *maxO3*
+
+## Inspection graphique
+
+Tout d'abord,nous allons effectuer une breve analyse descriptive de ces deux variables qualitatives en fonction de la variable réponse pour voir si certaines tendances probables se degagent.
+
+```{r boxplot_,fig.cap="Boxplot",fig.height=4,fig.width=9, echo=TRUE, warning=FALSE}
+box.plot1<-ggplot(data=ozone, aes(x=vent, y=maxO3)) +stat_boxplot(geom ="errorbar") + geom_boxplot(fill="pink") + ylab("maxO3") + xlab("vent") 
+box.plot2<-ggplot(data=ozone, aes(x=pluie, y=maxO3)) + stat_boxplot(geom ="errorbar") + geom_boxplot(fill="pink") + ylab("maxO3") + xlab("pluie")
+grid.arrange(box.plot1, box.plot2, nrow =1,  ncol=2)
+```
+
+On observe une disparité de la pollution de l'air en fonction en foction des differents facteurs vent et pluie : ce qui laisse supposé que les nieveaux de ces facteurs ont un effet sur la pollution de l'air.
+
+## interaction des facteurs vent et pluie
+
+```{r echo=TRUE, fig.height=5,fig.width=12}
+par(mfrow=c(1,2))
+interaction.plot(vent,pluie,maxO3)
+interaction.plot(pluie,vent,maxO3)
+#anova(lm(maxO3~vent*pluie,data=ozone))
+```
+Au vu de ces graphiques, il semble y avoir un effet d'interacttion entre les facteurs vent et pluie : car les courbes se croisent. Nous medelisons donc nos donnees par une Anova avec interaction
+
+## Validation des hypotheses du model d'anova
+
+### Normalité et homoscédasticité des residus
+
+```{r validation, echo=TRUE, fig.height=4,fig.width=9}
+par(mfrow=c(1,2))
+ml.anov = lm(maxO3~ vent*pluie, data = ozone_var_qual)
+res.stud2 = rstudent(ml.anov)
+qqnorm(res.stud2, col ="blue")
+abline(0,1, col="red", lty=2, lwd=2)
+plot(ml.anov, 1)
+#anova(lm(maxO3~vent*pluie,data=ozone))
+```
+On peut observer sur le premier diagramme ci dessus que les quantiles s'aligne bien sur la bissectrice : ce qui laisse supposer que l'hypothese de normalité des résidus est satisfaite. Concernant le deuxiemme diagramme (*Residuals vs Fitted*), on peut constater que les résidus semblent uniformement reparties tout le long des valeurs ajustés ou prédites du modemle : et donc l'hypothese d'homogéinété ou d'hémoscédasticité des résidus est vérifiée. 
+
+### Valeurs abberantes et influentes pour le modele d'anova
+
+```{r fig.cap="observations atypiques", echo=TRUE,fig.height=4,fig.width=9, cache=TRUE, warning=FALSE}
+par(mfrow=c(1,2))
+plot(res.stud2, col='green',pch=c(3),main='Résidus studentisés', ylim = c(-3,3))
+abline(h=c(-2,2), col=2, lty=2, lwd=2)
+n = dim(ozone_var_qual)[1]
+p =  dim(ozone_var_qual)[2]
+s1 <- qf(0.5,p,n-p)
+s2 <- qf(0.1,p,n-p)
+plot(1:n, cooks.distance(ml.anov), main = "Observations influentes", type = "h", xlab='Index',ylab='Distance de Cook', ylim = c(0, 0.9))
+abline(s2,0,lty=3, col="red", lwd=2)
+abline(s1,0,lty=2, col="red", lwd=2)
+```
+
+- On observe sur le premier diagramme que plus 95% des résidus studientisés  $t_i^*$ se trouvent dans l'intervalle [−2,2] et les autres à proximité de ces limites : donc on peut considerer q'il n'y a pas d'observations abérrantes.
+
+- Concernant la distance de Cook (diagramme 2), aucune obsevation ne semble etre considéré comme globalement influente. En effet, bien que deux observations aient une distance de Cook lègerement supérieur au seuil de $f_{p,n-p}(0.1)=0.1944$ souhaitable et fixé par Cook (en 1977), elles restent cependant tres éloignés du seuil préocupant $f_{p,n-p}(0.1)=0.7936$  fixé toujours par ce dernier.
+
+## Analyse de la variance et interpretation des resultats
+
+Les hypotheses de notre modele d'analyse de la variance étant toutes satisfaites, nous pouvons nous intéresser maintenant à l'iterpretation des resulats.
+
+```{r echo=TRUE, warning=FALSE, results='asis'}
+tab.anov = anova(ml.anov)
+knitr::kable(as.data.frame(tab.anov), align='c',caption="Table d'anova",booktabs=T)%>% kable_styling(latex_options = c("HOLD_position")) %>% row_spec(1:2, bold = T, color = "white", background = "red")
+```
+
+D'apres le tableau d'anova ci-dessus, on observe que :
+
+- les facteurs *vent * et *pluie*, ont un effet statistiquement significatif sur la pollution de l'air avec une *p-value* inférieure à 5% ($(p-value)_{vent} =0.0081$ et $(p-value)_{pluie} =13e^{-7}$ ).
+
+- l'intéraction de ces deux fateurs cité ci dessus, n'ont pas un impact significatif sur la polution de l'air avec une $p-value$ de $0.649$ supérieur au seuil fixé de *5%*. 
+
+## Conclusion
+
+Arrivé au terme de cet étude sur l'analyse des données d'*ozone* par la méthode d'anova , nous pouvons conclure que :
+
+- les facteurs *vent* et *pluie* ont un effet ou impact significatif sur la pollution de l'air.
+
+- l'intéraction des facteurs *vent* et *pluie* n'ont pas d'impact significatif sur la pollution de l'air.
+
+# ANNEXE
+
+```{r  echo=FALSE, results='asis', warning = FALSE}
+library('knitr')
+annexe <- data.frame(
+  Variables = c("Height", "Weight", "Age", "Salary", "Team", "Position", "Games played", "Minutes", "Fields.goal.made", "Fiels.goal.attempted", "X..Fields.goal.made", "X3pts.FGM", "X3pts..FGA", "X..3pts.FG", "Free.throws.made", "Free.throws.attempted"), Descriptions = c("Taille", "Poids","Age", "Salaire", "Equipe", "Poste occupé", "Nom du joueur", "Nombre de macths joués", "Paniers à 2 points reussis en moyenne en un match", "Paniers à 2 points tenté en moyenne en un match", "Pourcentage de paniers à 2 points réussis en moyenne en un match", "Nombre de paniers à 3 points réussis en moyenne en un match", "Nombre de paniers 3 points tentés en moyenne en un match", "Pourcentage de paniers à 3 points réussis en moyenne en un match", "Nombre de lancers francs réussis en moyenne en un match", "Nombre de lancers francs tentés en moyenne en un match"))
+
+knitr::kable(annexe, caption = "Description détaillé des variables d'étude pour l'ACP", align='l',booktabs=T)%>% kable_styling(latex_options = c("HOLD_position"))
+
+```
